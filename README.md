@@ -5,34 +5,137 @@ Reverse network tunnel — expose private machines to your network.
 ## Overview
 
 `rtunnel` creates reverse network tunnels. A machine inside a private network
-(WSL, Docker container, cloud VM, Firewalled machine) initiates an outbound WebSocket connection
-to your machine, giving you transparent IP-level access via a TUN interface
+(WSL, Docker container, cloud VM, macOS behind firewall) initiates an outbound WebSocket
+connection to your server, giving you transparent IP-level access via a TUN interface
 or a SOCKS5 proxy.
 
 ## Quick Start
 
-### On your machine (server)
+### 1. Start the server (Linux, requires root/CAP_NET_ADMIN)
 
 ```bash
-rtunnel server --listen :8443 --authorized-keys ~/.ssh/authorized_keys
+sudo rtunnel server \
+  --mode tun \
+  --listen 192.168.1.10:8443 \
+  --no-auth \
+  -v
 ```
 
-### On the private machine (client)
+This creates a `rtun0` interface with IP `10.99.0.1/16` and listens for client connections.
 
+Production flags:
 ```bash
-rtunnel client --server wss://your-pc:8443 --name wsl --expose 22,80
+sudo rtunnel server \
+  --mode tun \
+  --listen 192.168.1.10:8443 \
+  --tls-cert /etc/rtunnel/cert.pem \
+  --tls-key /etc/rtunnel/key.pem \
+  --authorized-keys ~/.ssh/authorized_keys \
+  -v
 ```
 
-### Result
-
-Your machine now has a route to the private machine. From any machine on your LAN:
+Alternatively, grant capabilities instead of running as root:
 ```bash
-ssh user@10.99.0.2   # IP assigned by rtunnel
+sudo setcap cap_net_admin+ep ./bin/rtunnel
+./bin/rtunnel server --mode tun --listen 192.168.1.10:8443 ...
+```
+
+### 2. Start the client (Linux, macOS, WSL, Docker)
+
+```bash
+sudo rtunnel client \
+  --server ws://192.168.1.10:8443 \
+  --name my-machine \
+  --tun \
+  --expose 22 \
+  --no-auth \
+  -v
+```
+
+This creates a local TUN interface (`utun` on macOS, `tun` on Linux) and assigns
+an IP from the server's pool (e.g., `10.99.0.2/16`).
+
+Production flags:
+```bash
+sudo rtunnel client \
+  --server wss://192.168.1.10:8443 \
+  --name my-machine \
+  --tun \
+  --expose 22,80,443 \
+  -v
+```
+
+> **Note:** `sudo` is required on the client when using `--tun` (creates a network
+> interface). Without `--tun`, the client runs unprivileged and only supports SOCKS
+> mode forwarding.
+
+### 3. Configure LAN routing
+
+For other machines on your network to reach tunnel clients (e.g., `10.99.0.2`),
+they need a route to `10.99.0.0/16` via the server's LAN IP.
+
+#### Option A: Static route on the router (recommended)
+
+Add a single route on your router so all LAN devices automatically know how to
+reach the tunnel network.
+
+| Network/Host IP | Netmask     | Gateway       | Metric | Interface |
+|-----------------|-------------|---------------|--------|-----------|
+| 10.99.0.0       | 255.255.0.0 | 192.168.1.10  | 1      | LAN       |
+
+Example on an ASUS router (Asuswrt-Merlin):
+
+1. Go to **LAN → Route**
+2. Set *Enable static routes* to **Yes**
+3. Add the route as shown above
+4. Click **Apply**
+
+#### Option B: Static route per machine (CLI)
+
+Linux:
+```bash
+sudo ip route add 10.99.0.0/16 via 192.168.1.10
+```
+
+macOS:
+```bash
+sudo route -n add -net 10.99.0.0/16 192.168.1.10
+```
+
+Windows (cmd as Administrator):
+```cmd
+route add 10.99.0.0 mask 255.255.0.0 192.168.1.10
+```
+
+#### Server-side forwarding (required)
+
+The server must forward packets between its LAN interface and the tunnel interface.
+With Docker's default iptables (policy DROP on FORWARD), add:
+
+```bash
+sudo iptables -I FORWARD 1 -i br0 -o rtun0 -j ACCEPT
+sudo iptables -I FORWARD 1 -i rtun0 -o br0 -j ACCEPT
+```
+
+Replace `br0` with your LAN interface name (`eth0`, `enp6s0`, etc.).
+
+### 4. Verify connectivity
+
+From the server:
+```bash
+ping 10.99.0.2          # may fail if client has ICMP firewall
+ssh user@10.99.0.2      # TCP should work
+```
+
+From any LAN machine (after routing is set up):
+```bash
+ssh user@10.99.0.2
 ```
 
 ## Use Cases
 
 - **WSL**: Access your WSL instance from any machine on your LAN via SSH
+- **macOS**: Expose a Mac behind a corporate firewall to your home network
 - **Docker**: SSH into containers without `docker exec`
 - **Remote VMs**: Access machines behind NAT/firewalls
 - **IoT/Edge**: Reach devices that can only make outbound connections
@@ -41,50 +144,64 @@ ssh user@10.99.0.2   # IP assigned by rtunnel
 
 ```bash
 # From source
-go install github.com/malevolent/rtunnel@latest
+make build
 
-# Or download a binary from releases
+# Or cross-compile for all platforms
+make release
+
+# Or install via go
+go install github.com/malevolent/rtunnel@latest
 ```
 
 ## Architecture
 
 ```
-[Your Machine]                        [Private Machine]
-rtunnel server ←── WSS/HTTPS ──── rtunnel client
-    │                                    │
- tun0 (10.99.0.1)                    proxies to localhost:22
-  + proxy ARP                        (no root needed)
+[LAN machines]                [Server (Linux)]                [Client (any OS)]
+    │                              │                                │
+    │  route 10.99.0.0/16    ┌─────┴─────┐                        │
+    ├─────── via srv ───────►│  rtun0     │◄── WebSocket ──────────┤
+    │                        │ 10.99.0.1  │                   utun/tun
+    │                        └────────────┘                  10.99.0.2
     │
-[LAN] → can reach 10.99.0.2
+    └──► ssh user@10.99.0.2
 ```
 
-The **client** is ultra-lightweight:
-- Static binary, no dependencies
-- No TUN device needed on the client side
-- No root/admin privileges required
-- Runs in Docker containers (FROM scratch)
-
-The **server** creates the network interfaces:
-- TUN device with assigned IP
-- Proxy ARP for LAN visibility (optional)
-- Route management
+- **Server** creates `rtun0`, assigns IPs, routes packets to/from clients
+- **Client** creates a local TUN device and forwards IP packets over WebSocket
+- **LAN machines** reach clients via static route through the server
 
 ## Modes
 
-### TUN Mode (default, requires root on server)
-Creates a real network interface. The private machine gets a routable IP.
-Other machines on your LAN can reach it (via proxy ARP).
+### TUN Mode (default, requires root on both sides)
+
+Creates a real network interface on server and client. The client gets a routable
+IP visible to the entire LAN (with proper routing configured).
+
+Supported platforms: Linux, macOS (utun), WSL2.
 
 ### SOCKS5 Mode (unprivileged fallback)
-Starts a local SOCKS5 proxy. Connect with:
+
+No TUN interfaces created. The server starts a local SOCKS5 proxy that forwards
+TCP connections through the tunnel. Useful when root is not available.
+
 ```bash
-ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@remote
+# Server
+rtunnel server --mode socks --listen :8443 --socks-listen 127.0.0.1:1080 --no-auth
+
+# Client (no sudo needed)
+rtunnel client --server ws://server:8443 --name my-machine --no-auth
+
+# Use the proxy
+curl --socks5-hostname 127.0.0.1:1080 http://target:80
+ssh -o ProxyCommand='nc -x 127.0.0.1:1080 %h %p' user@target
 ```
 
 ## Authentication
 
 Uses SSH keys via `ssh-agent`. The server checks the client's public key
 against `~/.ssh/authorized_keys` (or a configured path).
+
+For testing, use `--no-auth` on both server and client.
 
 ## Configuration
 
@@ -98,6 +215,26 @@ make release        # cross-compile all platforms
 make docker         # Docker image for client
 make test           # run tests
 ```
+
+## Platform Notes
+
+### macOS
+
+- TUN mode uses the native `utun` interface (no third-party kext needed)
+- Requires `sudo` for interface creation
+- Corporate MDM may block incoming ICMP (Stealth Mode); TCP still works
+- If the Application Firewall blocks incoming connections on utun, use a `pf`
+  redirect rule:
+  ```bash
+  echo 'rdr on utunX proto tcp from any to 10.99.0.2 port 22 -> 127.0.0.1 port 22' \
+    | sudo pfctl -a "com.apple/rtunnel" -f -
+  ```
+
+### Linux / WSL
+
+- TUN mode uses `/dev/net/tun` (standard kernel TUN/TAP)
+- Requires `root` or `CAP_NET_ADMIN`
+- No firewall workarounds needed in most cases
 
 ## License
 

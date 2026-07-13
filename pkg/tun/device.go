@@ -6,6 +6,7 @@ import (
 	"net"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 // Device represents a TUN network device.
@@ -27,9 +28,6 @@ type Config struct {
 
 // New creates and configures a TUN device.
 func New(cfg Config) (*Device, error) {
-	if runtime.GOOS != "linux" {
-		return nil, fmt.Errorf("TUN mode only supported on Linux")
-	}
 	if cfg.MTU == 0 {
 		cfg.MTU = 1500
 	}
@@ -82,23 +80,56 @@ func (d *Device) Close() error {
 
 // configureIP sets the IP address on the interface.
 func (d *Device) configureIP(cidr string) error {
-	ip, ipNet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return fmt.Errorf("parsing CIDR %q: %w", cidr, err)
+	switch runtime.GOOS {
+	case "linux":
+		ip, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("parsing CIDR %q: %w", cidr, err)
+		}
+		// ip addr add <ip>/<mask> dev <name>
+		addr := fmt.Sprintf("%s/%d", ip.String(), maskBits(ipNet.Mask))
+		return runCmd("ip", "addr", "add", addr, "dev", d.name)
+	case "darwin":
+		ip, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("parsing CIDR %q: %w", cidr, err)
+		}
+
+		peer := inferGateway(ipNet, ip)
+		if err := runCmd("ifconfig", d.name, "inet", ip.String(), peer.String(), "netmask", net.IP(ipNet.Mask).String()); err != nil {
+			return err
+		}
+		if err := runCmdAllowExists("route", "-n", "add", "-net", ipNet.String(), "-interface", d.name); err != nil {
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported OS for configureIP: %s", runtime.GOOS)
 	}
-	// ip addr add <ip>/<mask> dev <name>
-	addr := fmt.Sprintf("%s/%d", ip.String(), maskBits(ipNet.Mask))
-	return runCmd("ip", "addr", "add", addr, "dev", d.name)
 }
 
 // setMTU sets the MTU on the interface.
 func (d *Device) setMTU(mtu int) error {
-	return runCmd("ip", "link", "set", d.name, "mtu", fmt.Sprintf("%d", mtu))
+	switch runtime.GOOS {
+	case "linux":
+		return runCmd("ip", "link", "set", d.name, "mtu", fmt.Sprintf("%d", mtu))
+	case "darwin":
+		return runCmd("ifconfig", d.name, "mtu", fmt.Sprintf("%d", mtu))
+	default:
+		return fmt.Errorf("unsupported OS for setMTU: %s", runtime.GOOS)
+	}
 }
 
 // setUp brings the interface up.
 func (d *Device) setUp() error {
-	return runCmd("ip", "link", "set", d.name, "up")
+	switch runtime.GOOS {
+	case "linux":
+		return runCmd("ip", "link", "set", d.name, "up")
+	case "darwin":
+		return runCmd("ifconfig", d.name, "up")
+	default:
+		return fmt.Errorf("unsupported OS for setUp: %s", runtime.GOOS)
+	}
 }
 
 func runCmd(name string, args ...string) error {
@@ -107,6 +138,28 @@ func runCmd(name string, args ...string) error {
 		return fmt.Errorf("%s %v: %s: %w", name, args, string(out), err)
 	}
 	return nil
+}
+
+func runCmdAllowExists(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(string(out)), "file exists") {
+		return nil
+	}
+	return fmt.Errorf("%s %v: %s: %w", name, args, string(out), err)
+}
+
+func inferGateway(ipNet *net.IPNet, local net.IP) net.IP {
+	gw := make(net.IP, len(ipNet.IP))
+	copy(gw, ipNet.IP)
+	gw[len(gw)-1] = 1
+	if local.Equal(gw) {
+		gw[len(gw)-1] = 2
+	}
+	return gw
 }
 
 func maskBits(mask net.IPMask) int {
