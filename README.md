@@ -265,7 +265,43 @@ For testing, use `--no-auth` on both server and client.
 
 ## Configuration
 
-CLI flags or YAML config file. See `rtunnel.example.yaml`.
+Instead of passing flags on every invocation, you can use a YAML config file.
+rtunnel automatically looks for `rtunnel.yaml` in these paths (in order):
+
+1. `./rtunnel.yaml` (current directory)
+2. `~/.config/rtunnel/rtunnel.yaml`
+3. `/etc/rtunnel/rtunnel.yaml`
+
+Or specify a custom path with `--config /path/to/config.yaml`.
+
+Server example (`/etc/rtunnel/rtunnel.yaml`):
+```yaml
+server:
+  listen: "192.168.1.100:8444"
+  mode: "tun"
+  ip_pool: "10.99.0.0/16"
+  authorized_keys: "/etc/rtunnel/authorized_keys"
+```
+
+Client example (`/etc/rtunnel/rtunnel.yaml`):
+```yaml
+client:
+  server: "ws://192.168.1.100:8444"
+  name: "mac-client"
+  expose:
+    - 22
+    - 1234
+  reconnect: true
+  reconnect_interval: "5s"
+  insecure: false
+```
+
+Then just run `rtunnel server` or `rtunnel client` with no extra flags.
+
+CLI flags take priority over the YAML file. Environment variables with the
+`RTUNNEL_` prefix also work (e.g., `RTUNNEL_SERVER_LISTEN=:8444`).
+
+See `rtunnel.example.yaml` for a full reference with all available options.
 
 ## Building
 
