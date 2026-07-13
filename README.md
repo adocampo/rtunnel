@@ -157,6 +157,41 @@ From any LAN machine (after routing is set up):
 ssh user@10.99.0.2
 ```
 
+## Multiple Clients
+
+Multiple clients can connect simultaneously. The server assigns each one a
+unique IP from the pool:
+
+```
+Client "wsl"       → 10.99.0.2
+Client "macbook"   → 10.99.0.3
+Client "docker-ci" → 10.99.0.4
+```
+
+All clients can see each other automatically — traffic between them is routed
+through the server's TUN interface:
+
+```
+macbook (10.99.0.3) → utun → WebSocket → server rtun0 → WebSocket → tun → wsl (10.99.0.2)
+```
+
+No extra configuration needed. Just start additional clients with different
+`--name` values:
+
+```bash
+# On machine A
+sudo rtunnel client --server ws://192.168.1.10:8443 --name laptop --tun --expose 22 --no-auth
+
+# On machine B
+sudo rtunnel client --server ws://192.168.1.10:8443 --name desktop --tun --expose 22,1234 --no-auth
+```
+
+From any client or LAN machine:
+```bash
+ssh user@10.99.0.2    # reach machine A
+ssh user@10.99.0.3    # reach machine B
+```
+
 ## Use Cases
 
 - **WSL**: Access your WSL instance from any machine on your LAN via SSH
