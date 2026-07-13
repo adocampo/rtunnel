@@ -28,6 +28,7 @@ IP_POOL="10.99.0.0/16"
 NO_AUTH=""
 TLS_CERT=""
 TLS_KEY=""
+LAN_IFACE=""
 UNINSTALL=false
 
 # Parse arguments
@@ -39,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --no-auth)    NO_AUTH="--no-auth"; shift ;;
         --tls-cert)   TLS_CERT="$2"; shift 2 ;;
         --tls-key)    TLS_KEY="$2"; shift 2 ;;
+        --lan-iface)  LAN_IFACE="$2"; shift 2 ;;
         --uninstall)  UNINSTALL=true; shift ;;
         *)            echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -132,6 +134,70 @@ EOF
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 systemctl restart "${SERVICE_NAME}"
+
+# ─── IP forwarding & iptables ────────────────────────────────────────────────
+if [[ "$MODE" == "tun" ]]; then
+    # Ensure ip_forward is enabled persistently
+    if [[ "$(sysctl -n net.ipv4.ip_forward)" != "1" ]]; then
+        sysctl -w net.ipv4.ip_forward=1
+        echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-rtunnel.conf
+        echo "    Enabled net.ipv4.ip_forward (persistent)"
+    fi
+
+    # Auto-detect LAN interface if not specified
+    if [[ -z "$LAN_IFACE" ]]; then
+        # Use the interface of the listen address, or the default route interface
+        LISTEN_IP="${LISTEN%%:*}"
+        if [[ -n "$LISTEN_IP" && "$LISTEN_IP" != "0.0.0.0" ]]; then
+            LAN_IFACE=$(ip -o addr show | awk -v ip="$LISTEN_IP" '$4 ~ ip {print $2; exit}')
+        fi
+        if [[ -z "$LAN_IFACE" ]]; then
+            LAN_IFACE=$(ip route show default | awk '{print $5; exit}')
+        fi
+    fi
+
+    if [[ -n "$LAN_IFACE" ]]; then
+        echo "==> Configuring iptables forwarding (${LAN_IFACE} <-> rtun0)"
+        # Add rules if not already present
+        iptables -C FORWARD -i "$LAN_IFACE" -o rtun0 -j ACCEPT 2>/dev/null \
+            || iptables -I FORWARD 1 -i "$LAN_IFACE" -o rtun0 -j ACCEPT
+        iptables -C FORWARD -i rtun0 -o "$LAN_IFACE" -j ACCEPT 2>/dev/null \
+            || iptables -I FORWARD 1 -i rtun0 -o "$LAN_IFACE" -j ACCEPT
+
+        # Persist rules via a systemd oneshot service
+        FWSCRIPT="${CONFIG_DIR}/setup-forwarding.sh"
+        cat > "${FWSCRIPT}" <<FWEOF
+#!/bin/bash
+sysctl -w net.ipv4.ip_forward=1
+iptables -C FORWARD -i ${LAN_IFACE} -o rtun0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i ${LAN_IFACE} -o rtun0 -j ACCEPT
+iptables -C FORWARD -i rtun0 -o ${LAN_IFACE} -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i rtun0 -o ${LAN_IFACE} -j ACCEPT
+FWEOF
+        chmod 755 "${FWSCRIPT}"
+
+        FW_SERVICE="/etc/systemd/system/rtunnel-forwarding.service"
+        cat > "${FW_SERVICE}" <<FWSEOF
+[Unit]
+Description=rtunnel iptables forwarding rules
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${FWSCRIPT}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+FWSEOF
+        systemctl daemon-reload
+        systemctl enable rtunnel-forwarding
+        echo "    Forwarding rules persisted (rtunnel-forwarding.service)"
+    else
+        echo "    WARNING: Could not detect LAN interface. Add forwarding rules manually:"
+        echo "    iptables -I FORWARD 1 -i <lan-iface> -o rtun0 -j ACCEPT"
+        echo "    iptables -I FORWARD 1 -i rtun0 -o <lan-iface> -j ACCEPT"
+    fi
+fi
 
 echo ""
 echo "==> rtunnel server installed and running!"

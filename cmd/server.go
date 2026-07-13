@@ -76,6 +76,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 		mux.HandleFunc("/tunnel", manager.HandleConnection(verifier))
 	}
+	mux.HandleFunc("/api/status", manager.HandleStatus())
 
 	server := &http.Server{
 		Addr:    cfg.Listen,

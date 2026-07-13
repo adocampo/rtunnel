@@ -17,12 +17,22 @@ import (
 	"nhooyr.io/websocket"
 )
 
+// TunnelInfo is the JSON-serializable status of a tunnel.
+type TunnelInfo struct {
+	ID         uint32 `json:"id"`
+	Name       string `json:"name"`
+	RemoteAddr string `json:"remote_addr"`
+	AssignedIP string `json:"assigned_ip"`
+	ExposePorts []int `json:"expose_ports,omitempty"`
+}
+
 // Tunnel represents an active tunnel to a remote client.
 type Tunnel struct {
 	ID         uint32
 	Name       string
 	RemoteAddr string
 	AssignedIP net.IP
+	ExposePorts []int
 	Conn       *websocket.Conn
 	cancel     context.CancelFunc
 
@@ -219,7 +229,7 @@ func (m *Manager) handleClient(ctx context.Context, conn *websocket.Conn, verifi
 	}
 
 	// Step 6: Register tunnel
-	tun, err := m.registerTunnel(hello.Name, remoteAddr, conn, cancel)
+	tun, err := m.registerTunnelWithPorts(hello.Name, remoteAddr, conn, cancel, hello.ExposePorts)
 	if err != nil {
 		return fmt.Errorf("registering tunnel: %w", err)
 	}
@@ -266,7 +276,7 @@ func (m *Manager) handleClientNoAuth(ctx context.Context, conn *websocket.Conn, 
 	}
 
 	// Register tunnel
-	tun, err := m.registerTunnel(hello.Name, remoteAddr, conn, cancel)
+	tun, err := m.registerTunnelWithPorts(hello.Name, remoteAddr, conn, cancel, hello.ExposePorts)
 	if err != nil {
 		return fmt.Errorf("registering tunnel: %w", err)
 	}
@@ -317,6 +327,35 @@ func (m *Manager) registerTunnel(name, remoteAddr string, conn *websocket.Conn, 
 	m.byIP[ip.String()] = tun
 
 	return tun, nil
+}
+
+func (m *Manager) registerTunnelWithPorts(name, remoteAddr string, conn *websocket.Conn, cancel context.CancelFunc, ports []int) (*Tunnel, error) {
+	tun, err := m.registerTunnel(name, remoteAddr, conn, cancel)
+	if err != nil {
+		return nil, err
+	}
+	tun.ExposePorts = ports
+	return tun, nil
+}
+
+// HandleStatus returns an HTTP handler that reports connected tunnels as JSON.
+func (m *Manager) HandleStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.mu.RLock()
+		infos := make([]TunnelInfo, 0, len(m.tunnels))
+		for _, t := range m.tunnels {
+			infos = append(infos, TunnelInfo{
+				ID:          t.ID,
+				Name:        t.Name,
+				RemoteAddr:  t.RemoteAddr,
+				AssignedIP:  t.AssignedIP.String(),
+				ExposePorts: t.ExposePorts,
+			})
+		}
+		m.mu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"tunnels": infos})
+	}
 }
 
 func (m *Manager) unregisterTunnel(name string) {
