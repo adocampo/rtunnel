@@ -36,18 +36,22 @@ docker:
 install: build
 	cp bin/$(BINARY) $(GOPATH)/bin/$(BINARY)
 
-# Update: pull latest, rebuild, reinstall service (auto-detects server/client)
+# Update: pull latest, rebuild, reinstall binary, restart service (preserves config)
 update:
 	git pull
+	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY) .
 	@if [ -f /etc/systemd/system/rtunnel-server.service ]; then \
-		echo "==> Updating server..."; \
-		sudo bash scripts/install-server.sh $$(grep -oP '(?<=--listen )\S+' /etc/systemd/system/rtunnel-server.service 2>/dev/null || true); \
+		echo "==> Updating server binary..."; \
+		sudo install -m 0755 bin/$(BINARY) /usr/local/bin/$(BINARY); \
+		sudo systemctl restart rtunnel-server; \
+		echo "==> Server updated and restarted"; \
 	elif [ -f /etc/systemd/system/rtunnel-client.service ]; then \
-		echo "==> Updating client (Linux)..."; \
-		sudo bash scripts/install-client.sh; \
+		echo "==> Updating client binary (Linux)..."; \
+		sudo install -m 0755 bin/$(BINARY) /usr/local/bin/$(BINARY); \
+		sudo systemctl restart rtunnel-client; \
+		echo "==> Client updated and restarted"; \
 	elif [ -f /Library/LaunchDaemons/com.rtunnel.client.plist ]; then \
-		echo "==> Updating client (macOS)..."; \
-		CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY) . ; \
+		echo "==> Updating client binary (macOS)..."; \
 		sudo install -m 0755 bin/$(BINARY) /usr/local/bin/$(BINARY); \
 		sudo launchctl bootout system /Library/LaunchDaemons/com.rtunnel.client.plist 2>/dev/null || true; \
 		sudo launchctl bootstrap system /Library/LaunchDaemons/com.rtunnel.client.plist; \
