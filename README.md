@@ -65,6 +65,31 @@ sudo rtunnel client \
   -v
 ```
 
+#### Exposing additional ports
+
+The `--expose` flag controls which local ports are accessible through the tunnel.
+Specify a comma-separated list of ports:
+
+```bash
+# Expose SSH only
+--expose 22
+
+# Expose SSH + HTTP + HTTPS
+--expose 22,80,443
+
+# Expose SSH + LMStudio API (default port 1234)
+--expose 22,1234
+```
+
+After connecting, remote machines can reach these services via the tunnel IP:
+```bash
+# SSH into the client machine
+ssh user@10.99.0.2
+
+# Query LMStudio API running on the client
+curl http://10.99.0.2:1234/v1/models
+```
+
 > **Note:** `sudo` is required on the client when using `--tun` (creates a network
 > interface). Without `--tun`, the client runs unprivileged and only supports SOCKS
 > mode forwarding.
