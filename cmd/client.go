@@ -39,10 +39,9 @@ func init() {
 	clientCmd.Flags().Bool("no-auth", false, "skip SSH authentication (for testing only)")
 	clientCmd.Flags().Bool("tun", false, "enable TUN mode (requires root/CAP_NET_ADMIN)")
 
-	clientCmd.MarkFlagRequired("server")
-	clientCmd.MarkFlagRequired("name")
-
-	viper.BindPFlag("client.server", clientCmd.Flags().Lookup("server"))
+	viper.BindPFlag("client.name", clientCmd.Flags().Lookup("name"))
+	// Note: server and name are validated at runtime (not MarkFlagRequired)
+	// so they can be provided via config file instead of CLI flags.
 	viper.BindPFlag("client.name", clientCmd.Flags().Lookup("name"))
 	viper.BindPFlag("client.expose", clientCmd.Flags().Lookup("expose"))
 	viper.BindPFlag("client.expose_subnets", clientCmd.Flags().Lookup("expose-subnets"))
@@ -58,6 +57,12 @@ func runClient(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadClient()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.Server == "" {
+		return fmt.Errorf("server address is required (--server or config file)")
+	}
+	if cfg.Name == "" {
+		return fmt.Errorf("tunnel name is required (--name or config file)")
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
