@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -95,18 +99,42 @@ func runClient(cmd *cobra.Command, args []string) error {
 	// Enable TUN mode if requested
 	if cfg.TUN {
 		logger.Info("TUN mode enabled — will create device when server assigns IP")
-		conn.EnableTUN(func(assignedIP string) (io.ReadWriteCloser, error) {
+		conn.EnableTUN(func(assignedIP string) (io.ReadWriteCloser, string, error) {
 			dev, err := tun.New(tun.Config{
 				Name: "rtun0",
 				IP:   assignedIP,
 				MTU:  1420,
 			})
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			logger.Info("TUN device ready", "name", dev.Name(), "ip", assignedIP)
-			return dev, nil
+			return dev, dev.Name(), nil
 		})
+
+		// On macOS, configure pf redirect for exposed ports (bypasses Application Firewall)
+		if runtime.GOOS == "darwin" && len(cfg.ExposePorts) > 0 {
+			conn.OnTunReady(func(tunName, assignedIP string) {
+				ip, _, _ := net.ParseCIDR(assignedIP)
+				if ip == nil {
+					return
+				}
+				var rules []string
+				for _, port := range cfg.ExposePorts {
+					rules = append(rules, fmt.Sprintf(
+						"rdr on %s proto tcp from any to %s port %d -> 127.0.0.1 port %d",
+						tunName, ip.String(), port, port))
+				}
+				ruleText := strings.Join(rules, "\n")
+				cmd := exec.Command("pfctl", "-a", "com.apple/rtunnel", "-f", "-")
+				cmd.Stdin = strings.NewReader(ruleText)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					logger.Warn("failed to configure pf redirect", "error", err, "output", string(out))
+				} else {
+					logger.Info("pf redirect configured", "interface", tunName, "ip", ip.String(), "ports", cfg.ExposePorts)
+				}
+			})
+		}
 	}
 
 	return conn.Run(ctx)

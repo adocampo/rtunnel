@@ -28,8 +28,10 @@ type Client struct {
 	streams    map[uint32]net.Conn
 	noAuth     bool
 	tunDev     io.ReadWriteCloser // TUN device (nil until created)
+	tunName    string             // interface name after creation
 	tunEnabled bool               // if true, create TUN when server sends IP
-	tunCreator func(ip string) (io.ReadWriteCloser, error)
+	tunCreator func(ip string) (io.ReadWriteCloser, string, error) // returns device, ifname, error
+	onTunReady func(tunName, assignedIP string) // called after TUN is created
 }
 
 // NewClient creates a new transport client.
@@ -52,9 +54,16 @@ func NewClientNoAuth(cfg *config.ClientConfig, logger *slog.Logger) *Client {
 }
 
 // EnableTUN enables TUN mode. The creator function is called when the server assigns an IP.
-func (c *Client) EnableTUN(creator func(ip string) (io.ReadWriteCloser, error)) {
+// It must return the ReadWriteCloser, the interface name, and any error.
+func (c *Client) EnableTUN(creator func(ip string) (io.ReadWriteCloser, string, error)) {
 	c.tunEnabled = true
 	c.tunCreator = creator
+}
+
+// OnTunReady registers a callback invoked after the TUN device is created.
+// tunName is the interface name (e.g., "utun4"), assignedIP is the CIDR (e.g., "10.99.0.2/16").
+func (c *Client) OnTunReady(fn func(tunName, assignedIP string)) {
+	c.onTunReady = fn
 }
 
 // SetTUN sets a pre-created TUN device.
@@ -271,13 +280,17 @@ func (c *Client) handleControl(ctx context.Context, conn *websocket.Conn, env *p
 		// If TUN mode is enabled and server wants TUN, create the device
 		if c.tunEnabled && req.Mode == "tun" && c.tunDev == nil {
 			if c.tunCreator != nil {
-				dev, err := c.tunCreator(req.AssignedIP)
+				dev, ifName, err := c.tunCreator(req.AssignedIP)
 				if err != nil {
 					c.logger.Error("failed to create TUN device", "error", err)
 				} else {
 					c.tunDev = dev
+					c.tunName = ifName
 					go c.readTUNLoop(ctx, conn)
 					c.logger.Info("TUN device created", "ip", req.AssignedIP)
+					if c.onTunReady != nil {
+						c.onTunReady(ifName, req.AssignedIP)
+					}
 				}
 			}
 		} else if c.tunDev != nil && req.Mode == "tun" {
