@@ -125,7 +125,7 @@ func runClient(cmd *cobra.Command, args []string) error {
 						"rdr on %s proto tcp from any to %s port %d -> 127.0.0.1 port %d",
 						tunName, ip.String(), port, port))
 				}
-				ruleText := strings.Join(rules, "\n")
+				ruleText := strings.Join(rules, "\n") + "\n"
 				cmd := exec.Command("pfctl", "-a", "com.apple/rtunnel", "-f", "-")
 				cmd.Stdin = strings.NewReader(ruleText)
 				if out, err := cmd.CombinedOutput(); err != nil {
