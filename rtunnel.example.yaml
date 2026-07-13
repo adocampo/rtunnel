@@ -1,0 +1,67 @@
+# rtunnel server configuration
+server:
+  # Address to listen on
+  listen: ":8443"
+
+  # TLS configuration (omit for plaintext — testing only)
+  tls:
+    cert: ""
+    key: ""
+
+  # SSH authorized keys file for client authentication
+  authorized_keys: "~/.ssh/authorized_keys"
+
+  # IP pool for tunnel allocation
+  # Use a private range for isolated tunnel IPs:
+  ip_pool: "10.99.0.0/16"
+  # Or use "lan" mode with a specific LAN IP range for bridged access:
+  # ip_pool: "192.168.1.200/29"
+
+  # LAN interface for proxy ARP (enables other LAN machines to reach tunnel IPs)
+  # lan_interface: "eth0"
+
+  # Default tunnel mode: "tun" (requires root) or "socks" (unprivileged)
+  mode: "tun"
+
+  # SOCKS5 proxy settings (only used when mode=socks)
+  # Address for the SOCKS5 proxy to listen on
+  socks_listen: ":1080"
+  # Tunnel name to route through ("*" = first available client)
+  socks_tunnel: "*"
+
+---
+# rtunnel client configuration
+client:
+  # Server to connect to
+  server: "wss://my-linux-pc:8443"
+
+  # Tunnel name (identifies this client)
+  name: "wsl"
+
+  # Ports to expose from this machine (services running on localhost)
+  expose:
+    - 22    # SSH
+    - 80    # HTTP
+    - 443   # HTTPS
+
+  # Optional: subnets reachable through this client
+  # expose_subnets:
+  #   - "172.17.0.0/16"  # Docker network
+
+  # SSH key for authentication (empty = use ssh-agent)
+  ssh_key: ""
+
+  # Auto-reconnect on disconnect
+  reconnect: true
+  reconnect_interval: "5s"
+
+  # Skip TLS verification (for self-signed certs)
+  insecure: false
+
+---
+# rtunnel relay configuration (optional intermediary)
+relay:
+  listen: ":8443"
+  tls:
+    cert: "/etc/rtunnel/cert.pem"
+    key: "/etc/rtunnel/key.pem"

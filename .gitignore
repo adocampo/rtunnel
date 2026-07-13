@@ -1,0 +1,16 @@
+# Binaries
+bin/
+
+# Config with secrets
+rtunnel.yaml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Test output
+coverage.out
