@@ -158,11 +158,13 @@ if [[ "$MODE" == "tun" ]]; then
 
     if [[ -n "$LAN_IFACE" ]]; then
         echo "==> Configuring iptables forwarding (${LAN_IFACE} <-> rtun0)"
-        # Add rules if not already present
+        # Add rules if not already present (ignore errors if rtun0 not yet created)
         iptables -C FORWARD -i "$LAN_IFACE" -o rtun0 -j ACCEPT 2>/dev/null \
-            || iptables -I FORWARD 1 -i "$LAN_IFACE" -o rtun0 -j ACCEPT
+            || iptables -I FORWARD 1 -i "$LAN_IFACE" -o rtun0 -j ACCEPT 2>/dev/null \
+            || true
         iptables -C FORWARD -i rtun0 -o "$LAN_IFACE" -j ACCEPT 2>/dev/null \
-            || iptables -I FORWARD 1 -i rtun0 -o "$LAN_IFACE" -j ACCEPT
+            || iptables -I FORWARD 1 -i rtun0 -o "$LAN_IFACE" -j ACCEPT 2>/dev/null \
+            || true
 
         # Persist rules via a systemd oneshot service
         FWSCRIPT="${CONFIG_DIR}/setup-forwarding.sh"
