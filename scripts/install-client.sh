@@ -51,6 +51,7 @@ NO_AUTH=""
 INSECURE=""
 SSH_KEY=""
 UNINSTALL=false
+FORCE=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -63,6 +64,7 @@ while [[ $# -gt 0 ]]; do
         --no-auth)    NO_AUTH="--no-auth"; shift ;;
         --insecure)   INSECURE="--insecure"; shift ;;
         --ssh-key)    SSH_KEY="$2"; shift 2 ;;
+        --force)      FORCE="1"; shift ;;
         --uninstall)  UNINSTALL=true; shift ;;
         *)            echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -114,9 +116,12 @@ echo "==> Installing binary to ${INSTALL_DIR}/${BINARY}"
 install -m 0755 "bin/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 mkdir -p "${CONFIG_DIR}"
 
-# ─── Generate YAML config ─────────────────────────────────────────────────────
+# ─── Generate YAML config (skip if exists unless --force) ─────────────────────────
 CONFIG_FILE="${CONFIG_DIR}/rtunnel.yaml"
-echo "==> Writing config to ${CONFIG_FILE}"
+if [[ -f "${CONFIG_FILE}" && -z "${FORCE}" ]]; then
+    echo "==> Config already exists: ${CONFIG_FILE} (skipping, use --force to overwrite)"
+else
+    echo "==> Writing config to ${CONFIG_FILE}"
 
 # Build expose list as YAML array
 EXPOSE_YAML=""
@@ -147,7 +152,8 @@ if [[ -n "$SSH_KEY" ]]; then
     echo "  ssh_key: \"${SSH_KEY}\"" >> "${CONFIG_FILE}"
 fi
 
-chmod 644 "${CONFIG_FILE}"
+    chmod 644 "${CONFIG_FILE}"
+fi
 
 # ─── Install service per OS ───────────────────────────────────────────────────
 case "$OS" in

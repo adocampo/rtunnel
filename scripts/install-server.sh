@@ -30,6 +30,7 @@ TLS_CERT=""
 TLS_KEY=""
 LAN_IFACE=""
 UNINSTALL=false
+FORCE=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -41,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --tls-cert)   TLS_CERT="$2"; shift 2 ;;
         --tls-key)    TLS_KEY="$2"; shift 2 ;;
         --lan-iface)  LAN_IFACE="$2"; shift 2 ;;
+        --force)      FORCE="1"; shift ;;
         --uninstall)  UNINSTALL=true; shift ;;
         *)            echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -79,37 +81,41 @@ install -m 0755 "bin/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 # ─── Config directory ─────────────────────────────────────────────────────────
 mkdir -p "${CONFIG_DIR}"
 
-# ─── Generate YAML config ─────────────────────────────────────────────────────
+# ─── Generate YAML config (skip if exists, use --force to overwrite) ──────────
 CONFIG_FILE="${CONFIG_DIR}/rtunnel.yaml"
-echo "==> Writing config to ${CONFIG_FILE}"
+if [[ -f "${CONFIG_FILE}" && -z "${FORCE:-}" ]]; then
+    echo "==> Config already exists: ${CONFIG_FILE} (use install with new args to regenerate)"
+else
+    echo "==> Writing config to ${CONFIG_FILE}"
 
-cat > "${CONFIG_FILE}" <<YAML
+    cat > "${CONFIG_FILE}" <<YAML
 server:
   listen: "${LISTEN}"
   mode: "${MODE}"
   ip_pool: "${IP_POOL}"
 YAML
 
-if [[ -n "$NO_AUTH" ]]; then
-    echo "  no_auth: true" >> "${CONFIG_FILE}"
-else
-    echo "  authorized_keys: \"${CONFIG_DIR}/authorized_keys\"" >> "${CONFIG_FILE}"
-    if [[ ! -f "${CONFIG_DIR}/authorized_keys" ]]; then
-        touch "${CONFIG_DIR}/authorized_keys"
-        chmod 600 "${CONFIG_DIR}/authorized_keys"
-        echo "    Created ${CONFIG_DIR}/authorized_keys (add client public keys here)"
+    if [[ -n "$NO_AUTH" ]]; then
+        echo "  no_auth: true" >> "${CONFIG_FILE}"
+    else
+        echo "  authorized_keys: \"${CONFIG_DIR}/authorized_keys\"" >> "${CONFIG_FILE}"
+        if [[ ! -f "${CONFIG_DIR}/authorized_keys" ]]; then
+            touch "${CONFIG_DIR}/authorized_keys"
+            chmod 600 "${CONFIG_DIR}/authorized_keys"
+            echo "    Created ${CONFIG_DIR}/authorized_keys (add client public keys here)"
+        fi
     fi
-fi
 
-if [[ -n "$TLS_CERT" && -n "$TLS_KEY" ]]; then
-    cat >> "${CONFIG_FILE}" <<YAML
+    if [[ -n "$TLS_CERT" && -n "$TLS_KEY" ]]; then
+        cat >> "${CONFIG_FILE}" <<YAML
   tls:
     cert: "${TLS_CERT}"
     key: "${TLS_KEY}"
 YAML
-fi
+    fi
 
-chmod 600 "${CONFIG_FILE}"
+    chmod 600 "${CONFIG_FILE}"
+fi
 
 # ─── Systemd service ─────────────────────────────────────────────────────────
 echo "==> Creating systemd service: ${SERVICE_NAME}"
