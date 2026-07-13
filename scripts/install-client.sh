@@ -147,7 +147,7 @@ if [[ -n "$SSH_KEY" ]]; then
     echo "  ssh_key: \"${SSH_KEY}\"" >> "${CONFIG_FILE}"
 fi
 
-chmod 600 "${CONFIG_FILE}"
+chmod 644 "${CONFIG_FILE}"
 
 # ─── Install service per OS ───────────────────────────────────────────────────
 case "$OS" in

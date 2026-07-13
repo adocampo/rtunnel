@@ -10,6 +10,7 @@ import (
 
 	"github.com/malevolent/rtunnel/pkg/tunnel"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var statusCmd = &cobra.Command{
@@ -23,20 +24,30 @@ currently connected clients, their assigned IPs, and exposed ports.`,
 func init() {
 	rootCmd.AddCommand(statusCmd)
 	statusCmd.Flags().StringP("server", "s", "", "server address (e.g., http://192.168.1.100:8444)")
-	statusCmd.MarkFlagRequired("server")
+	viper.BindPFlag("client.server", statusCmd.Flags().Lookup("server"))
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
 	server, _ := cmd.Flags().GetString("server")
+	if server == "" {
+		// Fall back to config file (client.server or server.listen)
+		server = viper.GetString("client.server")
+	}
+	if server == "" {
+		server = viper.GetString("server.listen")
+	}
+	if server == "" {
+		return fmt.Errorf("server address required (--server flag or config file)")
+	}
 
 	// Normalize URL
 	server = strings.TrimSuffix(server, "/")
+	// Convert ws:// to http://, wss:// to https://
+	server = strings.Replace(server, "wss://", "https://", 1)
+	server = strings.Replace(server, "ws://", "http://", 1)
 	if !strings.HasPrefix(server, "http") {
 		server = "http://" + server
 	}
-	// Convert ws:// to http://
-	server = strings.Replace(server, "ws://", "http://", 1)
-	server = strings.Replace(server, "wss://", "https://", 1)
 
 	url := server + "/api/status"
 
