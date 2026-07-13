@@ -77,22 +77,37 @@ install -m 0755 "bin/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 # ─── Config directory ─────────────────────────────────────────────────────────
 mkdir -p "${CONFIG_DIR}"
 
-# ─── Build ExecStart command ──────────────────────────────────────────────────
-EXEC_ARGS="server --mode ${MODE} --listen ${LISTEN} --ip-pool ${IP_POOL}"
+# ─── Generate YAML config ─────────────────────────────────────────────────────
+CONFIG_FILE="${CONFIG_DIR}/rtunnel.yaml"
+echo "==> Writing config to ${CONFIG_FILE}"
+
+cat > "${CONFIG_FILE}" <<YAML
+server:
+  listen: "${LISTEN}"
+  mode: "${MODE}"
+  ip_pool: "${IP_POOL}"
+YAML
+
 if [[ -n "$NO_AUTH" ]]; then
-    EXEC_ARGS="${EXEC_ARGS} --no-auth"
+    echo "  no_auth: true" >> "${CONFIG_FILE}"
 else
-    # Default authorized keys
-    EXEC_ARGS="${EXEC_ARGS} --authorized-keys ${CONFIG_DIR}/authorized_keys"
+    echo "  authorized_keys: \"${CONFIG_DIR}/authorized_keys\"" >> "${CONFIG_FILE}"
     if [[ ! -f "${CONFIG_DIR}/authorized_keys" ]]; then
         touch "${CONFIG_DIR}/authorized_keys"
         chmod 600 "${CONFIG_DIR}/authorized_keys"
         echo "    Created ${CONFIG_DIR}/authorized_keys (add client public keys here)"
     fi
 fi
+
 if [[ -n "$TLS_CERT" && -n "$TLS_KEY" ]]; then
-    EXEC_ARGS="${EXEC_ARGS} --tls-cert ${TLS_CERT} --tls-key ${TLS_KEY}"
+    cat >> "${CONFIG_FILE}" <<YAML
+  tls:
+    cert: "${TLS_CERT}"
+    key: "${TLS_KEY}"
+YAML
 fi
+
+chmod 600 "${CONFIG_FILE}"
 
 # ─── Systemd service ─────────────────────────────────────────────────────────
 echo "==> Creating systemd service: ${SERVICE_NAME}"
@@ -104,7 +119,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/${BINARY} ${EXEC_ARGS}
+ExecStart=${INSTALL_DIR}/${BINARY} server --config ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5
 AmbientCapabilities=CAP_NET_ADMIN
@@ -127,4 +142,9 @@ echo ""
 echo "    Status:  systemctl status ${SERVICE_NAME}"
 echo "    Logs:    journalctl -u ${SERVICE_NAME} -f"
 echo ""
+echo "    Config:  ${CONFIG_FILE}"
+echo ""
 echo "    Listening on ${LISTEN} (mode=${MODE}, pool=${IP_POOL})"
+echo ""
+echo "    To change settings, edit ${CONFIG_FILE} and run:"
+echo "    sudo systemctl restart ${SERVICE_NAME}"

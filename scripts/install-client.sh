@@ -114,20 +114,40 @@ echo "==> Installing binary to ${INSTALL_DIR}/${BINARY}"
 install -m 0755 "bin/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 mkdir -p "${CONFIG_DIR}"
 
-# ─── Build command arguments ──────────────────────────────────────────────────
-CLIENT_ARGS="client --server ${SERVER} --name ${NAME} --expose ${EXPOSE}"
+# ─── Generate YAML config ─────────────────────────────────────────────────────
+CONFIG_FILE="${CONFIG_DIR}/rtunnel.yaml"
+echo "==> Writing config to ${CONFIG_FILE}"
+
+# Build expose list as YAML array
+EXPOSE_YAML=""
+IFS=',' read -ra PORTS <<< "$EXPOSE"
+for port in "${PORTS[@]}"; do
+    EXPOSE_YAML="${EXPOSE_YAML}\n    - ${port}"
+done
+
+cat > "${CONFIG_FILE}" <<YAML
+client:
+  server: "${SERVER}"
+  name: "${NAME}"
+  expose:$(echo -e "${EXPOSE_YAML}")
+  reconnect: true
+  reconnect_interval: "5s"
+YAML
+
 if $TUN_MODE; then
-    CLIENT_ARGS="${CLIENT_ARGS} --tun"
+    echo "  tun: true" >> "${CONFIG_FILE}"
 fi
 if [[ -n "$NO_AUTH" ]]; then
-    CLIENT_ARGS="${CLIENT_ARGS} --no-auth"
+    echo "  no_auth: true" >> "${CONFIG_FILE}"
 fi
 if [[ -n "$INSECURE" ]]; then
-    CLIENT_ARGS="${CLIENT_ARGS} --insecure"
+    echo "  insecure: true" >> "${CONFIG_FILE}"
 fi
 if [[ -n "$SSH_KEY" ]]; then
-    CLIENT_ARGS="${CLIENT_ARGS} --ssh-key ${SSH_KEY}"
+    echo "  ssh_key: \"${SSH_KEY}\"" >> "${CONFIG_FILE}"
 fi
+
+chmod 600 "${CONFIG_FILE}"
 
 # ─── Install service per OS ───────────────────────────────────────────────────
 case "$OS" in
@@ -142,7 +162,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/${BINARY} ${CLIENT_ARGS}
+ExecStart=${INSTALL_DIR}/${BINARY} client --config ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5
 AmbientCapabilities=CAP_NET_ADMIN
@@ -172,7 +192,9 @@ EOF
     <key>ProgramArguments</key>
     <array>
         <string>${INSTALL_DIR}/${BINARY}</string>
-$(for arg in ${CLIENT_ARGS}; do echo "        <string>${arg}</string>"; done)
+        <string>client</string>
+        <string>--config</string>
+        <string>${CONFIG_FILE}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -199,7 +221,10 @@ esac
 
 echo ""
 echo "    Binary:  ${INSTALL_DIR}/${BINARY}"
+echo "    Config:  ${CONFIG_FILE}"
 echo "    Server:  ${SERVER}"
 echo "    Name:    ${NAME}"
 echo "    TUN:     ${TUN_MODE}"
 echo "    Expose:  ${EXPOSE}"
+echo ""
+echo "    To change settings, edit ${CONFIG_FILE} and restart the service."
