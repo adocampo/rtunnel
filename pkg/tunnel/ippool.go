@@ -66,6 +66,22 @@ func (p *IPPool) Release(ip net.IP) {
 	delete(p.allocated, ip.String())
 }
 
+// AllocateSpecific tries to allocate a specific IP from the pool.
+// Returns error if the IP is outside the pool range or already allocated.
+func (p *IPPool) AllocateSpecific(ip net.IP) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.network.Contains(ip) {
+		return fmt.Errorf("IP %s is outside pool %s", ip, p.network)
+	}
+	if p.allocated[ip.String()] {
+		return fmt.Errorf("IP %s is already allocated", ip)
+	}
+	p.allocated[ip.String()] = true
+	return nil
+}
+
 // GatewayIP returns the gateway IP (.1) for the pool's network.
 func (p *IPPool) GatewayIP() net.IP {
 	gw := make(net.IP, len(p.network.IP))

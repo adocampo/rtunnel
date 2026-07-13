@@ -34,6 +34,7 @@ func (c *ServerConfig) LogLevel() slog.Level {
 type ClientConfig struct {
 	Server            string        `mapstructure:"server"`
 	Name              string        `mapstructure:"name"`
+	RequestIP         string        `mapstructure:"request_ip"`
 	ExposePorts       []int         `mapstructure:"expose"`
 	ExposeSubnets     []string      `mapstructure:"expose_subnets"`
 	Reconnect         bool          `mapstructure:"reconnect"`
@@ -107,6 +108,7 @@ func LoadClient() (*ClientConfig, error) {
 	cfg := &ClientConfig{
 		Server:            viper.GetString("client.server"),
 		Name:              viper.GetString("client.name"),
+		RequestIP:         viper.GetString("client.request_ip"),
 		ExposePorts:       viper.GetIntSlice("client.expose"),
 		ExposeSubnets:     viper.GetStringSlice("client.expose_subnets"),
 		Reconnect:         viper.GetBool("client.reconnect"),

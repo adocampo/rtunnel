@@ -144,6 +144,7 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 		Version:       "0.1.0",
 		ExposePorts:   c.cfg.ExposePorts,
 		ExposeSubnets: c.cfg.ExposeSubnets,
+		RequestIP:     c.cfg.RequestIP,
 	}
 
 	if err := writeJSON(ctx, conn, protocol.MsgHello, hello); err != nil {
@@ -215,6 +216,7 @@ func (c *Client) handshakeNoAuth(ctx context.Context, conn *websocket.Conn) erro
 		Version:       "0.1.0",
 		ExposePorts:   c.cfg.ExposePorts,
 		ExposeSubnets: c.cfg.ExposeSubnets,
+		RequestIP:     c.cfg.RequestIP,
 	}
 	if err := writeJSON(ctx, conn, protocol.MsgHello, hello); err != nil {
 		return fmt.Errorf("sending hello: %w", err)

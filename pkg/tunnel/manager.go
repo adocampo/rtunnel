@@ -80,14 +80,15 @@ func (t *Tunnel) RemoveStream(id uint32) {
 
 // Manager handles multiple tunnels.
 type Manager struct {
-	cfg     *config.ServerConfig
-	logger  *slog.Logger
-	mu      sync.RWMutex
-	tunnels map[string]*Tunnel // name -> tunnel
-	byIP    map[string]*Tunnel // IP string -> tunnel (for TUN routing)
-	nextID  uint32
-	ipPool  *IPPool
-	tunDev  io.ReadWriteCloser // TUN device (nil if mode != tun)
+	cfg       *config.ServerConfig
+	logger    *slog.Logger
+	mu        sync.RWMutex
+	tunnels   map[string]*Tunnel // name -> tunnel
+	byIP      map[string]*Tunnel // IP string -> tunnel (for TUN routing)
+	stickyIPs map[string]net.IP  // name -> last assigned IP (for affinity)
+	nextID    uint32
+	ipPool    *IPPool
+	tunDev    io.ReadWriteCloser // TUN device (nil if mode != tun)
 }
 
 // NewManager creates a new tunnel manager.
@@ -99,12 +100,13 @@ func NewManager(cfg *config.ServerConfig, logger *slog.Logger) *Manager {
 	}
 
 	return &Manager{
-		cfg:     cfg,
-		logger:  logger,
-		tunnels: make(map[string]*Tunnel),
-		byIP:    make(map[string]*Tunnel),
-		nextID:  1,
-		ipPool:  pool,
+		cfg:       cfg,
+		logger:    logger,
+		tunnels:   make(map[string]*Tunnel),
+		byIP:      make(map[string]*Tunnel),
+		stickyIPs: make(map[string]net.IP),
+		nextID:    1,
+		ipPool:    pool,
 	}
 }
 
@@ -229,7 +231,7 @@ func (m *Manager) handleClient(ctx context.Context, conn *websocket.Conn, verifi
 	}
 
 	// Step 6: Register tunnel
-	tun, err := m.registerTunnelWithPorts(hello.Name, remoteAddr, conn, cancel, hello.ExposePorts)
+	tun, err := m.registerTunnelWithPorts(hello.Name, remoteAddr, conn, cancel, hello.ExposePorts, hello.RequestIP)
 	if err != nil {
 		return fmt.Errorf("registering tunnel: %w", err)
 	}
@@ -276,7 +278,7 @@ func (m *Manager) handleClientNoAuth(ctx context.Context, conn *websocket.Conn, 
 	}
 
 	// Register tunnel
-	tun, err := m.registerTunnelWithPorts(hello.Name, remoteAddr, conn, cancel, hello.ExposePorts)
+	tun, err := m.registerTunnelWithPorts(hello.Name, remoteAddr, conn, cancel, hello.ExposePorts, hello.RequestIP)
 	if err != nil {
 		return fmt.Errorf("registering tunnel: %w", err)
 	}
@@ -299,6 +301,10 @@ func (m *Manager) handleClientNoAuth(ctx context.Context, conn *websocket.Conn, 
 }
 
 func (m *Manager) registerTunnel(name, remoteAddr string, conn *websocket.Conn, cancel context.CancelFunc) (*Tunnel, error) {
+	return m.registerTunnelWithIP(name, remoteAddr, conn, cancel, "")
+}
+
+func (m *Manager) registerTunnelWithIP(name, remoteAddr string, conn *websocket.Conn, cancel context.CancelFunc, requestIP string) (*Tunnel, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -308,10 +314,40 @@ func (m *Manager) registerTunnel(name, remoteAddr string, conn *websocket.Conn, 
 		m.ipPool.Release(existing.AssignedIP)
 	}
 
-	ip, err := m.ipPool.Allocate()
-	if err != nil {
-		return nil, fmt.Errorf("allocating IP: %w", err)
+	var ip net.IP
+	var err error
+
+	// Priority: 1) client-requested IP, 2) sticky (last used by this name), 3) pool
+	if requestIP != "" {
+		requested := net.ParseIP(requestIP)
+		if requested != nil {
+			if allocErr := m.ipPool.AllocateSpecific(requested); allocErr == nil {
+				ip = requested
+				m.logger.Info("assigned requested IP", "name", name, "ip", ip)
+			} else {
+				m.logger.Warn("requested IP unavailable, falling back to pool", "requested", requestIP, "error", allocErr)
+			}
+		}
 	}
+
+	if ip == nil {
+		if sticky, ok := m.stickyIPs[name]; ok {
+			if allocErr := m.ipPool.AllocateSpecific(sticky); allocErr == nil {
+				ip = sticky
+				m.logger.Debug("reused sticky IP", "name", name, "ip", ip)
+			}
+		}
+	}
+
+	if ip == nil {
+		ip, err = m.ipPool.Allocate()
+		if err != nil {
+			return nil, fmt.Errorf("allocating IP: %w", err)
+		}
+	}
+
+	// Remember this assignment for future reconnects
+	m.stickyIPs[name] = ip
 
 	tun := &Tunnel{
 		ID:         m.nextID,
@@ -329,8 +365,8 @@ func (m *Manager) registerTunnel(name, remoteAddr string, conn *websocket.Conn, 
 	return tun, nil
 }
 
-func (m *Manager) registerTunnelWithPorts(name, remoteAddr string, conn *websocket.Conn, cancel context.CancelFunc, ports []int) (*Tunnel, error) {
-	tun, err := m.registerTunnel(name, remoteAddr, conn, cancel)
+func (m *Manager) registerTunnelWithPorts(name, remoteAddr string, conn *websocket.Conn, cancel context.CancelFunc, ports []int, requestIP string) (*Tunnel, error) {
+	tun, err := m.registerTunnelWithIP(name, remoteAddr, conn, cancel, requestIP)
 	if err != nil {
 		return nil, err
 	}

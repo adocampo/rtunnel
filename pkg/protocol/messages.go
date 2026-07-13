@@ -44,6 +44,7 @@ type Hello struct {
 	Version       string   `json:"version"`
 	ExposePorts   []int    `json:"expose_ports,omitempty"`
 	ExposeSubnets []string `json:"expose_subnets,omitempty"`
+	RequestIP     string   `json:"request_ip,omitempty"` // client may request a specific IP (e.g., "10.99.0.5")
 }
 
 // Challenge is sent by the server after Hello.

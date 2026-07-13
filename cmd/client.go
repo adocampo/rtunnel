@@ -42,8 +42,10 @@ func init() {
 	clientCmd.Flags().Bool("insecure", false, "skip TLS certificate verification")
 	clientCmd.Flags().Bool("no-auth", false, "skip SSH authentication (for testing only)")
 	clientCmd.Flags().Bool("tun", false, "enable TUN mode (requires root/CAP_NET_ADMIN)")
+	clientCmd.Flags().String("request-ip", "", "request a specific tunnel IP (e.g., 10.99.0.5)")
 
 	viper.BindPFlag("client.name", clientCmd.Flags().Lookup("name"))
+	viper.BindPFlag("client.request_ip", clientCmd.Flags().Lookup("request-ip"))
 	// Note: server and name are validated at runtime (not MarkFlagRequired)
 	// so they can be provided via config file instead of CLI flags.
 	viper.BindPFlag("client.name", clientCmd.Flags().Lookup("name"))
