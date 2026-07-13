@@ -192,6 +192,87 @@ ssh user@10.99.0.2    # reach machine A
 ssh user@10.99.0.3    # reach machine B
 ```
 
+## Static IP Assignment
+
+By default, the server remembers which IP it assigned to each client name
+("sticky IPs"). On reconnection, the same client always gets the same IP —
+no configuration needed.
+
+If you want to explicitly request a specific IP:
+
+```bash
+sudo rtunnel client --server ws://192.168.1.10:8443 --name my-machine --tun --request-ip 10.99.0.50
+```
+
+Or in the YAML config:
+```yaml
+client:
+  server: "ws://192.168.1.100:8444"
+  name: "my-machine"
+  request_ip: "10.99.0.50"
+  tun: true
+  expose:
+    - 22
+```
+
+IP assignment priority:
+1. Client-requested IP (`--request-ip`) — if available in the pool
+2. Sticky IP — last IP used by this `--name` (server remembers across reconnects)
+3. Next available from pool — sequential allocation
+
+## Status & Health Check
+
+Check the full state of the tunnel with a single command:
+
+```bash
+rtunnel status
+```
+
+Output:
+```
+rtunnel status
+────────────────────────────────────────────────────────────
+  Config:    /etc/rtunnel/rtunnel.yaml ✓
+  Server:    ws://192.168.1.100:8444
+  Name:      mac-client
+  Expose:    [22 1234]
+  TUN:       true
+
+  Service:
+    com.rtunnel.client: running ✓
+
+  TUN Interface:
+    utun4: 10.99.0.2/16 ✓
+
+  Server:    http://192.168.1.100:8444 ✓
+
+  Connected Clients: 1
+  ID    NAME                  TUNNEL IP           REMOTE ADDR               EXPOSE PORTS
+  ──    ────                  ─────────           ───────────               ────────────
+  1     mac-client            10.99.0.2           192.168.1.155:49882       22, 1234
+```
+
+The status command:
+- Validates config file (detects missing fields, wrong mode)
+- Checks service state (systemd on Linux, launchd on macOS)
+- Shows TUN interface and assigned IP
+- Tests server connectivity
+- Lists all connected clients with their IPs and exposed ports
+
+Reads the server address from the config file automatically — no flags needed.
+
+## Updating
+
+To update an existing installation (preserves configuration):
+
+```bash
+cd /path/to/rtunnel
+make update
+```
+
+This pulls the latest code, rebuilds the binary, and restarts the service.
+The YAML config is never touched during updates.
+
 ## Use Cases
 
 - **WSL**: Access your WSL instance from any machine on your LAN via SSH
@@ -310,6 +391,7 @@ make build          # local binary
 make release        # cross-compile all platforms
 make docker         # Docker image for client
 make test           # run tests
+make update         # pull + rebuild + restart service (preserves config)
 ```
 
 ## Platform Notes
@@ -319,8 +401,10 @@ make test           # run tests
 - TUN mode uses the native `utun` interface (no third-party kext needed)
 - Requires `sudo` for interface creation
 - Corporate MDM may block incoming ICMP (Stealth Mode); TCP still works
-- If the Application Firewall blocks incoming connections on utun, use a `pf`
-  redirect rule:
+- The client **automatically configures `pf` redirect rules** for all exposed
+  ports on each connection, so incoming traffic on the tunnel bypasses the
+  Application Firewall — no manual setup needed
+- If needed manually:
   ```bash
   echo 'rdr on utunX proto tcp from any to 10.99.0.2 port 22 -> 127.0.0.1 port 22' \
     | sudo pfctl -a "com.apple/rtunnel" -f -
