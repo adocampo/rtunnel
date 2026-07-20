@@ -27,11 +27,11 @@ type Client struct {
 	mu         sync.Mutex
 	streams    map[uint32]net.Conn
 	noAuth     bool
-	tunDev     io.ReadWriteCloser // TUN device (nil until created)
-	tunName    string             // interface name after creation
-	tunEnabled bool               // if true, create TUN when server sends IP
+	tunDev     io.ReadWriteCloser                                  // TUN device (nil until created)
+	tunName    string                                              // interface name after creation
+	tunEnabled bool                                                // if true, create TUN when server sends IP
 	tunCreator func(ip string) (io.ReadWriteCloser, string, error) // returns device, ifname, error
-	onTunReady func(tunName, assignedIP string) // called after TUN is created
+	onTunReady func(tunName, assignedIP string)                    // called after TUN is created
 }
 
 // NewClient creates a new transport client.
@@ -133,8 +133,18 @@ func (c *Client) connect(ctx context.Context) error {
 
 	c.logger.Info("tunnel established", "name", c.cfg.Name)
 
-	// Enter packet forwarding loop
-	return c.forwardLoop(ctx, conn)
+	// Run ping keepalive and forwarding loop concurrently.
+	// If either exits, we cancel and reconnect.
+	loopCtx, loopCancel := context.WithCancel(ctx)
+	defer loopCancel()
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- c.pingLoop(loopCtx, conn) }()
+	go func() { errCh <- c.forwardLoop(loopCtx, conn) }()
+
+	err = <-errCh
+	loopCancel()
+	return err
 }
 
 func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
@@ -233,6 +243,23 @@ func (c *Client) handshakeNoAuth(ctx context.Context, conn *websocket.Conn) erro
 	return nil
 }
 
+// pingLoop sends periodic application-level pings to keep the WebSocket alive.
+func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn) error {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := writeJSON(ctx, conn, protocol.MsgPing, &protocol.Ping{Timestamp: time.Now().UnixMilli()}); err != nil {
+				return fmt.Errorf("ping failed: %w", err)
+			}
+			c.logger.Debug("keepalive ping sent")
+		}
+	}
+}
+
 func (c *Client) forwardLoop(ctx context.Context, conn *websocket.Conn) error {
 	for {
 		msgType, data, err := conn.Read(ctx)
@@ -270,6 +297,10 @@ func (c *Client) handleControl(ctx context.Context, conn *websocket.Conn, env *p
 		var ping protocol.Ping
 		protocol.Unmarshal(env, &ping)
 		return writeJSON(ctx, conn, protocol.MsgPong, &protocol.Pong{Timestamp: ping.Timestamp})
+
+	case protocol.MsgPong:
+		// Response to our keepalive ping — nothing to do
+		return nil
 
 	case protocol.MsgTunnelRequest:
 		var req protocol.TunnelRequest

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/malevolent/rtunnel/pkg/auth"
 	"github.com/malevolent/rtunnel/pkg/config"
@@ -19,34 +20,34 @@ import (
 
 // TunnelInfo is the JSON-serializable status of a tunnel.
 type TunnelInfo struct {
-	ID         uint32 `json:"id"`
-	Name       string `json:"name"`
-	RemoteAddr string `json:"remote_addr"`
-	AssignedIP string `json:"assigned_ip"`
-	ExposePorts []int `json:"expose_ports,omitempty"`
+	ID          uint32 `json:"id"`
+	Name        string `json:"name"`
+	RemoteAddr  string `json:"remote_addr"`
+	AssignedIP  string `json:"assigned_ip"`
+	ExposePorts []int  `json:"expose_ports,omitempty"`
 }
 
 // Tunnel represents an active tunnel to a remote client.
 type Tunnel struct {
-	ID         uint32
-	Name       string
-	RemoteAddr string
-	AssignedIP net.IP
+	ID          uint32
+	Name        string
+	RemoteAddr  string
+	AssignedIP  net.IP
 	ExposePorts []int
-	Conn       *websocket.Conn
-	cancel     context.CancelFunc
+	Conn        *websocket.Conn
+	cancel      context.CancelFunc
 
 	// Stream routing for SOCKS/proxy mode
-	mu          sync.Mutex
-	streams     map[uint32]*Stream
-	nextStream  uint32
+	mu         sync.Mutex
+	streams    map[uint32]*Stream
+	nextStream uint32
 }
 
 // Stream represents a proxied TCP connection through the tunnel.
 type Stream struct {
 	ID       uint32
-	Conn     net.Conn      // local SOCKS connection
-	ResultCh chan bool      // signals dial result
+	Conn     net.Conn  // local SOCKS connection
+	ResultCh chan bool // signals dial result
 }
 
 // NewStream creates a stream and registers it in the tunnel.
@@ -407,6 +408,37 @@ func (m *Manager) unregisterTunnel(name string) {
 }
 
 func (m *Manager) forwardLoop(ctx context.Context, conn *websocket.Conn, tun *Tunnel) error {
+	// Start server-side keepalive ping loop
+	loopCtx, loopCancel := context.WithCancel(ctx)
+	defer loopCancel()
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- m.pingLoop(loopCtx, conn, tun.Name) }()
+	go func() { errCh <- m.readLoop(loopCtx, conn, tun) }()
+
+	err := <-errCh
+	loopCancel()
+	return err
+}
+
+// pingLoop sends periodic pings to the client to keep the connection alive.
+func (m *Manager) pingLoop(ctx context.Context, conn *websocket.Conn, name string) error {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := writeJSON(ctx, conn, protocol.MsgPing, &protocol.Ping{Timestamp: time.Now().UnixMilli()}); err != nil {
+				return fmt.Errorf("ping to %s failed: %w", name, err)
+			}
+			m.logger.Debug("keepalive ping sent", "tunnel", name)
+		}
+	}
+}
+
+func (m *Manager) readLoop(ctx context.Context, conn *websocket.Conn, tun *Tunnel) error {
 	for {
 		msgType, data, err := conn.Read(ctx)
 		if err != nil {
@@ -437,6 +469,11 @@ func (m *Manager) forwardLoop(ctx context.Context, conn *websocket.Conn, tun *Tu
 
 func (m *Manager) handleClientControl(ctx context.Context, conn *websocket.Conn, tun *Tunnel, env *protocol.Envelope) error {
 	switch env.Type {
+	case protocol.MsgPing:
+		var ping protocol.Ping
+		protocol.Unmarshal(env, &ping)
+		return writeJSON(ctx, conn, protocol.MsgPong, &protocol.Pong{Timestamp: ping.Timestamp})
+
 	case protocol.MsgPong:
 		return nil
 
